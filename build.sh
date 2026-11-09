@@ -7,5 +7,7 @@ rm -rf build
 mkdir -p "$APP/Contents/MacOS"
 swiftc -O -target arm64-apple-macos14 Sources/main.swift -o "$APP/Contents/MacOS/DiskTemizle"
 cp Info.plist "$APP/Contents/"
+mkdir -p "$APP/Contents/Resources"
+cp AppIcon.icns "$APP/Contents/Resources/"
 codesign --force --sign - "$APP"
 echo "OK: $APP"
