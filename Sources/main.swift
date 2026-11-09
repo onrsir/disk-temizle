@@ -36,6 +36,10 @@ func run(_ args: [String]) -> String {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     p.arguments = args
+    // Apps opened from Finder get a minimal PATH; add Homebrew and /usr/local so docker, go etc. are found.
+    var env = ProcessInfo.processInfo.environment
+    env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+    p.environment = env
     let out = Pipe()
     p.standardOutput = out
     p.standardError = FileHandle.nullDevice
@@ -57,6 +61,60 @@ func diskSize(_ paths: [String]) -> Int64 {
     return total
 }
 
+// "12.3GB (45%)" -> bytes. Docker uses decimal units.
+func dockerSize(_ s: String) -> Int64 {
+    let t = s.split(separator: " ").first.map(String.init) ?? ""
+    for (u, m) in [("kB", 1e3), ("KB", 1e3), ("MB", 1e6), ("GB", 1e9), ("TB", 1e12), ("B", 1.0)] where t.hasSuffix(u) {
+        return Int64((Double(t.dropLast(u.count)) ?? 0) * m)
+    }
+    return 0
+}
+
+func has(_ dir: String, _ files: [String]) -> Bool { files.contains { exists(dir + "/" + $0) } }
+func hasExt(_ dir: String, _ exts: [String]) -> Bool { children(dir).contains { p in exts.contains { p.hasSuffix($0) } } }
+
+// Folder names that can be build output or cache inside a project.
+let buildNames = ["node_modules", ".next", ".nuxt", ".turbo", ".parcel-cache", ".svelte-kit", ".angular", ".expo", "Pods",
+                  "target", "build", "dist", ".gradle", "bin", "obj", ".dart_tool", "venv", ".venv", "__pycache__",
+                  ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", "DerivedData"]
+
+// Label for a found folder, or nil when it is not generated output (generic names need a marker file next to them).
+func classify(_ path: String) -> String? {
+    let parent = (path as NSString).deletingLastPathComponent
+    let gradle = ["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"]
+    switch base(path) {
+    case "node_modules": return L("node_modules (paket kurulumuyla geri gelir)", "node_modules (restored by package install)")
+    case ".next": return "Next.js build"
+    case ".nuxt": return "Nuxt build"
+    case ".turbo": return "Turbo cache"
+    case ".parcel-cache": return "Parcel cache"
+    case ".svelte-kit": return "SvelteKit build"
+    case ".angular": return "Angular cache"
+    case ".expo": return "Expo cache"
+    case "Pods": return L("CocoaPods (pod install ile geri gelir)", "CocoaPods (restored by pod install)")
+    case ".dart_tool": return "Dart tool cache"
+    case "DerivedData": return "Xcode DerivedData"
+    case ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox": return L("Python test/lint cache'i", "Python test/lint cache")
+    case "venv", ".venv":
+        return exists(path + "/pyvenv.cfg") ? L("Python sanal ortamı (yeniden kurulur)", "Python virtualenv (reinstall to restore)") : nil
+    case ".gradle": return has(parent, gradle) ? L("Gradle proje cache'i", "Gradle project cache") : nil
+    case "target":
+        if has(parent, ["pom.xml"]) { return "Maven target" }
+        if has(parent, ["Cargo.toml"]) { return "Rust target" }
+        if has(parent, ["build.sbt"]) { return "sbt target" }
+        return nil
+    case "build":
+        if has(parent, gradle) { return "Gradle build" }
+        if has(parent, ["pubspec.yaml"]) { return "Flutter build" }
+        if has(parent, ["package.json"]) { return L("JS build çıktısı", "JS build output") }
+        if has(parent, ["CMakeLists.txt", "setup.py", "pyproject.toml"]) { return "build" }
+        return nil
+    case "dist": return has(parent, ["package.json", "setup.py", "pyproject.toml"]) ? L("dist çıktısı", "dist output") : nil
+    case "bin", "obj": return hasExt(parent, [".csproj", ".fsproj", ".vbproj"]) ? ".NET \(base(path))" : nil
+    default: return nil
+    }
+}
+
 // "com.apple.CoreSimulator.SimRuntime.iOS-26-1" -> "iOS 26.1"
 func runtimeName(_ rt: String) -> String {
     let last = rt.split(separator: ".").last.map(String.init) ?? rt
@@ -73,6 +131,7 @@ struct CleanItem: Identifiable {
     var detail = ""
     var paths: [String]
     var commands: [[String]] = []
+    var fixedSize: Int64? = nil   // for items that are not plain folders (Docker)
     var size: Int64 = 0
     var selected = false
 }
@@ -103,7 +162,8 @@ enum Scanner {
         var done = 0
         DispatchQueue.concurrentPerform(iterations: refs.count) { i in
             let (s, j) = refs[i]
-            let size = diskSize(snapshot[s].items[j].paths)
+            let item = snapshot[s].items[j]
+            let size = item.fixedSize ?? diskSize(item.paths)
             lock.lock(); sizes[i] = size; done += 1; let d = done; lock.unlock()
             progress(L("Boyutlar hesaplanıyor", "Measuring sizes") + " (\(d)/\(refs.count))")
         }
@@ -118,34 +178,61 @@ enum Scanner {
     static func discover() -> [CleanSection] {
         let roots = projectRoots()
 
+        let appSupport = hp("Library/Application Support")
         let caches: [(String, [String])] = [
             (L("Uygulama cache'leri", "App caches") + " (~/Library/Caches)", children(hp("Library/Caches"))),
+            (L("Uygulama logları", "App logs") + " (~/Library/Logs)", children(hp("Library/Logs"))),
             ("Xcode DerivedData", children(hp("Library/Developer/Xcode/DerivedData"))),
-            ("Gradle cache", [hp(".gradle/caches")]),
+            ("Xcode Previews", [hp("Library/Developer/Xcode/UserData/Previews")]),
+            ("CoreSimulator cache", [hp("Library/Developer/CoreSimulator/Caches")]),
+            ("Maven (~/.m2/repository)", [hp(".m2/repository")]),
+            ("Gradle cache", [hp(".gradle/caches"), hp(".gradle/wrapper/dists")]),
             ("npm cache", [hp(".npm/_cacache"), hp(".npm/_npx")]),
-            ("pnpm store", [hp("Library/pnpm/store")]),
+            ("Yarn cache", [hp(".yarn/berry/cache"), hp(".cache/yarn")]),
+            ("pnpm store", [hp("Library/pnpm/store"), hp(".local/share/pnpm/store"), hp(".pnpm-store")]),
+            ("Bun cache", [hp(".bun/install/cache")]),
             ("uv (Python) cache", [hp(".cache/uv")]),
+            ("pip cache", [hp(".cache/pip")]),
+            (L("Conda paketleri", "Conda packages"),
+             ["miniconda3", "anaconda3", "miniforge3", "opt/anaconda3", "opt/miniconda3"].map { hp($0 + "/pkgs") }),
+            (L("Go modül cache'i", "Go module cache"), [hp("go/pkg/mod")]),
+            ("Rust (cargo) registry", [hp(".cargo/registry"), hp(".cargo/git")]),
+            (L("NuGet (.NET) paketleri", "NuGet (.NET) packages"), [hp(".nuget/packages")]),
+            ("Composer (PHP) cache", [hp(".composer/cache"), hp(".cache/composer")]),
+            ("Dart pub cache", [hp(".pub-cache/hosted"), hp(".pub-cache/git")]),
             (L("Hugging Face modelleri", "Hugging Face models"), [hp(".cache/huggingface")]),
             (L("Whisper modelleri", "Whisper models"), [hp(".cache/whisper")]),
             (L("Puppeteer tarayıcıları", "Puppeteer browsers"), [hp(".cache/puppeteer")]),
+            (L("VS Code / Cursor cache'leri", "VS Code / Cursor caches"),
+             ["Code", "Cursor", "Windsurf"].flatMap { app in
+                 ["Cache", "CachedData", "CachedExtensionVSIXs", "Code Cache", "GPUCache"].map { appSupport + "/\(app)/\($0)" }
+             }),
         ]
 
         var builds: [CleanItem] = []
+        var pycache: [String] = []
+        var nameExpr: [String] = []
+        for (i, n) in buildNames.enumerated() { nameExpr += (i == 0 ? [] : ["-o"]) + ["-name", n] }
         // find with no start path would search the current directory.
-        let found = roots.isEmpty ? [] : lines(run(["find"] + roots + ["-maxdepth", "6",
-                               "(", "-name", ".git", "-o", "-name", "Library", "-o", "-name", "build", ")", "-prune", "-o",
-                               "-type", "d", "(", "-name", "node_modules", "-o", "-name", ".turbo", "-o", "-name", ".next", "-o", "-name", "Pods", ")",
-                               "-prune", "-print"]))
-        let labels = ["node_modules": L("node_modules (paket kurulumuyla geri gelir)", "node_modules (restored by package install)"),
-                      ".turbo": "Turbo cache",
-                      ".next": "Next.js build",
-                      "Pods": L("CocoaPods (pod install ile geri gelir)", "CocoaPods (restored by pod install)")]
-        for f in found { builds.append(CleanItem(name: rel(f), detail: labels[base(f)] ?? "", paths: [f])) }
-        let pubspecs = roots.isEmpty ? [] : lines(run(["find"] + roots + ["-maxdepth", "4", "-name", "pubspec.yaml",
-                                                                          "-not", "-path", "*/node_modules/*", "-not", "-path", "*/.*"]))
-        for pub in pubspecs {
-            let b = (pub as NSString).deletingLastPathComponent + "/build"
-            if exists(b) { builds.append(CleanItem(name: rel(b), detail: "Flutter build", paths: [b])) }
+        let found = roots.isEmpty ? [] : lines(run(["find"] + roots + ["-maxdepth", "7",
+                               "(", "-name", ".git", "-o", "-name", "Library", ")", "-prune", "-o",
+                               "-type", "d", "("] + nameExpr + [")", "-prune", "-print"]))
+        for f in found {
+            if base(f) == "__pycache__" { pycache.append(f); continue }
+            if let label = classify(f) { builds.append(CleanItem(name: rel(f), detail: label, paths: [f])) }
+        }
+        if !pycache.isEmpty {
+            builds.append(CleanItem(name: "Python __pycache__", detail: "\(pycache.count) " + L("klasör", "folders"), paths: pycache))
+        }
+
+        var docker: [CleanItem] = []
+        let df = run(["docker", "system", "df", "--format", "{{.Type}}\t{{.Reclaimable}}"])
+        if !df.isEmpty {
+            let reclaim = lines(df).filter { !$0.hasPrefix("Local Volumes") }
+                .reduce(Int64(0)) { $0 + dockerSize(String($1.split(separator: "\t").last ?? "")) }
+            docker.append(CleanItem(name: L("Kullanılmayan imajlar, container'lar ve build cache", "Unused images, containers and build cache"),
+                                    detail: "docker system prune -a · " + L("volume'lara dokunmaz", "volumes are kept"),
+                                    paths: [], commands: [["docker", "system", "prune", "-af"]], fixedSize: reclaim))
         }
 
         var sims: [CleanItem] = []
@@ -176,6 +263,11 @@ enum Scanner {
             let n = base(avd)
             let own = inis.filter { ((try? String(contentsOfFile: $0, encoding: .utf8)) ?? "").contains("/" + n) }
             return CleanItem(name: (n as NSString).deletingPathExtension, detail: L("Android emülatörü", "Android emulator"), paths: [avd] + own)
+        }
+        let images = hp("Library/Android/sdk/system-images")
+        let sysImages = children(images).flatMap(children).flatMap(children).map {
+            CleanItem(name: "system-image " + $0.dropFirst(images.count + 1),
+                      detail: L("Android SDK · SDK Manager'dan yeniden indirilir", "Android SDK · re-download in SDK Manager"), paths: [$0])
         }
 
         var xcode = children(hp("Library/Developer/Xcode/Archives")).map { d -> CleanItem in
@@ -217,15 +309,18 @@ enum Scanner {
             .map { CleanItem(name: base($0), detail: "Downloads", paths: [$0]) }
 
         return [
-            CleanSection(title: L("Cache'ler", "Caches"), note: L("Gerekince yeniden oluşur", "Rebuilt when needed"), safe: true,
-                         items: caches.map { CleanItem(name: $0.0, paths: $0.1) }),
-            CleanSection(title: L("Build çıktıları", "Build outputs"), note: L("Yeniden derleyince geri gelir", "Come back on the next build"),
+            CleanSection(title: L("Paket ve araç cache'leri", "Package and tool caches"), note: L("Gerekince yeniden iner/oluşur", "Re-downloaded or rebuilt when needed"),
+                         safe: true, items: caches.map { CleanItem(name: $0.0, paths: $0.1) }),
+            CleanSection(title: L("Proje build çıktıları", "Project build outputs"),
+                         note: L("Frontend, backend, mobil · yeniden derleyince geri gelir", "Frontend, backend, mobile · come back on the next build"),
                          safe: true, minSize: 50 << 20, items: builds),
+            CleanSection(title: "Docker", note: L("Kullanılmayanlar tekrar çekilir", "Unused ones are pulled again when needed"),
+                         safe: false, items: docker),
             CleanSection(title: L("iOS simülatörleri", "iOS simulators"),
                          note: L("Tamamen silinen cihaz ve içindeki uygulamalar gider", "Deleting a device removes its apps too"),
                          safe: false, minSize: 100 << 20, items: sims),
-            CleanSection(title: L("Android emülatörleri", "Android emulators"), note: L("Android Studio'dan yeniden oluşturulur", "Recreate them in Android Studio"),
-                         safe: false, items: avds),
+            CleanSection(title: "Android", note: L("Emülatörler ve SDK system image'ları", "Emulators and SDK system images"),
+                         safe: false, items: avds + sysImages),
             CleanSection(title: "Xcode", note: L("Yayındaki sürümün arşivini sakla", "Keep the archive of your released build"), safe: false, items: xcode),
             CleanSection(title: "Claude", note: L("Ekran görüntüleri, eski konuşmalar, VM", "Screenshots, old conversations, VM"), safe: false, items: claude),
             CleanSection(title: L("Unity projeleri", "Unity projects"), note: L("Library klasörleri", "Library folders"),
@@ -243,7 +338,11 @@ enum Cleaner {
         var failed = 0
         for path in item.paths where exists(path) {
             guard path.hasPrefix(H + "/") else { continue }
-            do { try fm.removeItem(atPath: path) } catch { failed += 1 }
+            do { try fm.removeItem(atPath: path) } catch {
+                // Some caches (e.g. Go modules) are read-only; make them writable and retry.
+                run(["chmod", "-R", "u+w", path])
+                do { try fm.removeItem(atPath: path) } catch { failed += 1 }
+            }
         }
         return failed == 0 ? nil : "\(item.name) (\(failed) " + L("silinemedi", "could not be deleted") + ")"
     }
@@ -471,7 +570,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--lang"), i + 1 < CommandLine.a
 if CommandLine.arguments.contains("--dump") {
     for s in Scanner.scan(progress: { _ in }) {
         print("## \(s.title) — \(fmt(s.total)) · \(s.note)")
-        for i in s.items.prefix(3) { print("  \(fmt(i.size))\t\(i.name)\t\(i.detail)") }
+        for i in s.items { print("  \(fmt(i.size))\t\(i.name)\t\(i.detail)") }
     }
     exit(0)
 }
