@@ -8,13 +8,15 @@ Geliştirici Mac'leri için küçük bir SwiftUI disk temizleme uygulaması. Dis
 
 Taradıkları:
 - **Cache'ler**: `~/Library/Caches`, Xcode DerivedData, Gradle, npm, pnpm, uv, Hugging Face, Whisper, Puppeteer
-- **Build çıktıları** (`~/IdeaProjects` altında): `.turbo`, `.next`, `node_modules`, `Pods`, Flutter `build/`
+- **Build çıktıları** (proje klasörlerinde): `.turbo`, `.next`, `node_modules`, `Pods`, Flutter `build/`
 - **iOS simülatörleri**: cihazın tamamı ya da sadece cache'i
 - **Android emülatörleri** (AVD)
 - **Xcode**: Archives, iOS DeviceSupport
 - **Claude**: ekran görüntüleri/videolar, 30 günden eski konuşmalar, VM imajı, uygulama cache'i
 - **Unity** projelerinin `Library` klasörleri
 - **Downloads**: 200 MB üstü öğeler
+
+Proje klasörleri varsayılan olarak ev dizinindeki yaygın klasörlerdir (`Developer`, `Projects`, `code`, `dev`, `src`, `workspace`, `repos` vb.); uygulamadaki **Proje klasörleri** butonundan değiştirilir.
 
 Silme kalıcıdır (çöp kutusuna gitmez), her silmeden önce onay sorulur. Sadece ev dizini altındaki yollar silinir.
 
@@ -39,13 +41,15 @@ A small SwiftUI disk cleanup app for developer Macs. It scans the disk, lists wh
 
 What it scans:
 - **Caches**: `~/Library/Caches`, Xcode DerivedData, Gradle, npm, pnpm, uv, Hugging Face, Whisper, Puppeteer
-- **Build outputs** (under `~/IdeaProjects`): `.turbo`, `.next`, `node_modules`, `Pods`, Flutter `build/`
+- **Build outputs** (in your project folders): `.turbo`, `.next`, `node_modules`, `Pods`, Flutter `build/`
 - **iOS simulators**: the whole device or only its cache
 - **Android emulators** (AVDs)
 - **Xcode**: Archives, iOS DeviceSupport
 - **Claude**: screenshots/videos, conversations older than 30 days, VM image, app cache
 - **Unity** project `Library` folders
 - **Downloads**: items over 200 MB
+
+By default the project folders are the common ones in your home folder (`Developer`, `Projects`, `code`, `dev`, `src`, `workspace`, `repos`, …); change them with the **Project folders** button.
 
 Deletion is permanent (nothing goes to the Trash) and every delete asks for confirmation first. Only paths inside your home folder are deleted.
 

@@ -12,6 +12,12 @@ var lang = UserDefaults.standard.string(forKey: "lang")
 func L(_ tr: String, _ en: String) -> String { lang == "tr" ? tr : en }
 
 func hp(_ s: String) -> String { H + "/" + s }
+
+// Folders searched for build outputs and Unity projects: the user's choice, otherwise common dev folders that exist.
+let commonRoots = ["Developer", "Projects", "IdeaProjects", "code", "dev", "src", "workspace", "repos", "GitHub", "Documents/GitHub"]
+func projectRoots() -> [String] {
+    UserDefaults.standard.stringArray(forKey: "roots") ?? commonRoots.map(hp).filter(exists)
+}
 func exists(_ p: String) -> Bool { fm.fileExists(atPath: p) }
 func base(_ p: String) -> String { (p as NSString).lastPathComponent }
 func rel(_ p: String) -> String { p.hasPrefix(H + "/") ? "~/" + p.dropFirst(H.count + 1) : p }
@@ -110,7 +116,7 @@ enum Scanner {
     }
 
     static func discover() -> [CleanSection] {
-        let ip = hp("IdeaProjects")
+        let roots = projectRoots()
 
         let caches: [(String, [String])] = [
             (L("Uygulama cache'leri", "App caches") + " (~/Library/Caches)", children(hp("Library/Caches"))),
@@ -125,7 +131,8 @@ enum Scanner {
         ]
 
         var builds: [CleanItem] = []
-        let found = lines(run(["find", ip, "-maxdepth", "6",
+        // find with no start path would search the current directory.
+        let found = roots.isEmpty ? [] : lines(run(["find"] + roots + ["-maxdepth", "6",
                                "(", "-name", ".git", "-o", "-name", "Library", "-o", "-name", "build", ")", "-prune", "-o",
                                "-type", "d", "(", "-name", "node_modules", "-o", "-name", ".turbo", "-o", "-name", ".next", "-o", "-name", "Pods", ")",
                                "-prune", "-print"]))
@@ -134,7 +141,9 @@ enum Scanner {
                       ".next": "Next.js build",
                       "Pods": L("CocoaPods (pod install ile geri gelir)", "CocoaPods (restored by pod install)")]
         for f in found { builds.append(CleanItem(name: rel(f), detail: labels[base(f)] ?? "", paths: [f])) }
-        for pub in lines(run(["find", ip, "-maxdepth", "4", "-name", "pubspec.yaml", "-not", "-path", "*/node_modules/*", "-not", "-path", "*/.*"])) {
+        let pubspecs = roots.isEmpty ? [] : lines(run(["find"] + roots + ["-maxdepth", "4", "-name", "pubspec.yaml",
+                                                                          "-not", "-path", "*/node_modules/*", "-not", "-path", "*/.*"]))
+        for pub in pubspecs {
             let b = (pub as NSString).deletingLastPathComponent + "/build"
             if exists(b) { builds.append(CleanItem(name: rel(b), detail: "Flutter build", paths: [b])) }
         }
@@ -194,7 +203,8 @@ enum Scanner {
         ]
 
         var unity: [CleanItem] = []
-        let candidates = Set(children(ip) + children(H) + children(ip).flatMap { children($0) })
+        let top = roots.flatMap(children)
+        let candidates = Set(roots + top + children(H) + top.flatMap(children))
         for d in candidates where exists(d + "/Assets") && exists(d + "/ProjectSettings") && exists(d + "/Library") {
             unity.append(CleanItem(name: rel(d),
                                    detail: L("Unity Library · açılışta yeniden oluşur (ilk açılış uzun sürer)", "Unity Library · rebuilt on open (first open is slow)"),
@@ -365,10 +375,28 @@ struct ContentView: View {
                 UserDefaults.standard.set(new, forKey: "lang")
                 store.scan()
             }
+            Button { chooseRoots() } label: { Label(L("Proje klasörleri", "Project folders"), systemImage: "folder") }
+                .help(projectRoots().map(rel).joined(separator: "\n"))
+                .disabled(store.busy)
             Button { store.scan() } label: { Label(L("Yeniden tara", "Rescan"), systemImage: "arrow.clockwise") }
                 .disabled(store.busy)
         }
         .padding()
+    }
+
+    func chooseRoots() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.directoryURL = URL(fileURLWithPath: H)
+        panel.message = L("Build çıktıları ve Unity projeleri için taranacak klasörleri seç",
+                          "Choose the folders to search for build outputs and Unity projects")
+        panel.prompt = L("Seç", "Choose")
+        if panel.runModal() == .OK {
+            UserDefaults.standard.set(panel.urls.map { $0.path }, forKey: "roots")
+            store.scan()
+        }
     }
 
     func sectionHeader(_ s: Binding<CleanSection>) -> some View {
