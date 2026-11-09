@@ -6,6 +6,11 @@ import AppKit
 let H = NSHomeDirectory()
 let fm = FileManager.default
 
+// UI language: saved choice, otherwise the system language.
+var lang = UserDefaults.standard.string(forKey: "lang")
+    ?? (Locale.preferredLanguages.first?.hasPrefix("tr") == true ? "tr" : "en")
+func L(_ tr: String, _ en: String) -> String { lang == "tr" ? tr : en }
+
 func hp(_ s: String) -> String { H + "/" + s }
 func exists(_ p: String) -> Bool { fm.fileExists(atPath: p) }
 func base(_ p: String) -> String { (p as NSString).lastPathComponent }
@@ -83,7 +88,7 @@ struct SimList: Decodable { let devices: [String: [SimDevice]] }
 
 enum Scanner {
     static func scan(progress: @escaping (String) -> Void) -> [CleanSection] {
-        progress("Klasörler aranıyor…")
+        progress(L("Klasörler aranıyor…", "Looking for folders…"))
         var sections = discover()
         let snapshot = sections
         let refs = snapshot.indices.flatMap { s in snapshot[s].items.indices.map { (s, $0) } }
@@ -94,7 +99,7 @@ enum Scanner {
             let (s, j) = refs[i]
             let size = diskSize(snapshot[s].items[j].paths)
             lock.lock(); sizes[i] = size; done += 1; let d = done; lock.unlock()
-            progress("Boyutlar hesaplanıyor (\(d)/\(refs.count))")
+            progress(L("Boyutlar hesaplanıyor", "Measuring sizes") + " (\(d)/\(refs.count))")
         }
         for (i, (s, j)) in refs.enumerated() { sections[s].items[j].size = sizes[i] }
         for s in sections.indices {
@@ -108,15 +113,15 @@ enum Scanner {
         let ip = hp("IdeaProjects")
 
         let caches: [(String, [String])] = [
-            ("Uygulama cache'leri (~/Library/Caches)", children(hp("Library/Caches"))),
+            (L("Uygulama cache'leri", "App caches") + " (~/Library/Caches)", children(hp("Library/Caches"))),
             ("Xcode DerivedData", children(hp("Library/Developer/Xcode/DerivedData"))),
             ("Gradle cache", [hp(".gradle/caches")]),
             ("npm cache", [hp(".npm/_cacache"), hp(".npm/_npx")]),
             ("pnpm store", [hp("Library/pnpm/store")]),
             ("uv (Python) cache", [hp(".cache/uv")]),
-            ("Hugging Face modelleri", [hp(".cache/huggingface")]),
-            ("Whisper modelleri", [hp(".cache/whisper")]),
-            ("Puppeteer tarayıcıları", [hp(".cache/puppeteer")]),
+            (L("Hugging Face modelleri", "Hugging Face models"), [hp(".cache/huggingface")]),
+            (L("Whisper modelleri", "Whisper models"), [hp(".cache/whisper")]),
+            (L("Puppeteer tarayıcıları", "Puppeteer browsers"), [hp(".cache/puppeteer")]),
         ]
 
         var builds: [CleanItem] = []
@@ -124,8 +129,10 @@ enum Scanner {
                                "(", "-name", ".git", "-o", "-name", "Library", "-o", "-name", "build", ")", "-prune", "-o",
                                "-type", "d", "(", "-name", "node_modules", "-o", "-name", ".turbo", "-o", "-name", ".next", "-o", "-name", "Pods", ")",
                                "-prune", "-print"]))
-        let labels = ["node_modules": "node_modules (paket kurulumuyla geri gelir)", ".turbo": "Turbo cache",
-                      ".next": "Next.js build", "Pods": "CocoaPods (pod install ile geri gelir)"]
+        let labels = ["node_modules": L("node_modules (paket kurulumuyla geri gelir)", "node_modules (restored by package install)"),
+                      ".turbo": "Turbo cache",
+                      ".next": "Next.js build",
+                      "Pods": L("CocoaPods (pod install ile geri gelir)", "CocoaPods (restored by pod install)")]
         for f in found { builds.append(CleanItem(name: rel(f), detail: labels[base(f)] ?? "", paths: [f])) }
         for pub in lines(run(["find", ip, "-maxdepth", "4", "-name", "pubspec.yaml", "-not", "-path", "*/node_modules/*", "-not", "-path", "*/.*"])) {
             let b = (pub as NSString).deletingLastPathComponent + "/build"
@@ -141,11 +148,13 @@ enum Scanner {
                     let dir = hp("Library/Developer/CoreSimulator/Devices/" + d.udid)
                     guard exists(dir) else { continue }
                     let booted = d.state == "Booted"
-                    sims.append(CleanItem(name: d.name, detail: "\(os)\(booted ? " · açık" : "") · cihazı tamamen sil",
+                    sims.append(CleanItem(name: d.name,
+                                          detail: os + (booted ? L(" · açık", " · running") : "") + L(" · cihazı tamamen sil", " · delete the whole device"),
                                           paths: [dir],
                                           commands: [["xcrun", "simctl", "shutdown", d.udid], ["xcrun", "simctl", "delete", d.udid]]))
                     if !booted {
-                        sims.append(CleanItem(name: d.name + " — sadece cache", detail: "\(os) · uygulamalar ve kayıtlar kalır",
+                        sims.append(CleanItem(name: d.name + L(" — sadece cache", " — cache only"),
+                                              detail: os + L(" · uygulamalar ve kayıtlar kalır", " · apps and data are kept"),
                                               paths: [dir + "/data/Library/Caches"]))
                     }
                 }
@@ -157,15 +166,15 @@ enum Scanner {
         let avds = children(avdRoot).filter { $0.hasSuffix(".avd") }.map { avd -> CleanItem in
             let n = base(avd)
             let own = inis.filter { ((try? String(contentsOfFile: $0, encoding: .utf8)) ?? "").contains("/" + n) }
-            return CleanItem(name: (n as NSString).deletingPathExtension, detail: "Android emülatörü", paths: [avd] + own)
+            return CleanItem(name: (n as NSString).deletingPathExtension, detail: L("Android emülatörü", "Android emulator"), paths: [avd] + own)
         }
 
         var xcode = children(hp("Library/Developer/Xcode/Archives")).map { d -> CleanItem in
             let apps = Set(children(d).map { base($0).components(separatedBy: " ").first ?? "" }).sorted().joined(separator: ", ")
-            return CleanItem(name: "Arşiv " + base(d), detail: apps, paths: [d])
+            return CleanItem(name: L("Arşiv ", "Archive ") + base(d), detail: apps, paths: [d])
         }
         xcode += children(hp("Library/Developer/Xcode/iOS DeviceSupport")).map {
-            CleanItem(name: base($0), detail: "iOS DeviceSupport (cihaz bağlanınca yeniden oluşur)", paths: [$0])
+            CleanItem(name: base($0), detail: L("iOS DeviceSupport (cihaz bağlanınca yeniden oluşur)", "iOS DeviceSupport (rebuilt when a device connects)"), paths: [$0])
         }
 
         let cp = hp(".claude/projects")
@@ -175,16 +184,21 @@ enum Scanner {
         let old = lines(run(["find", cp, "-mindepth", "2", "-maxdepth", "2", "-mtime", "+30", "-not", "-name", "memory"]))
         let cl = hp("Library/Application Support/Claude")
         let claude = [
-            CleanItem(name: "Ekran görüntüleri ve videolar", detail: "\(media.count) dosya · ~/.claude/projects", paths: media),
-            CleanItem(name: "30 günden eski konuşmalar", detail: "\(old.count) öğe · bu konuşmalara geri dönülemez", paths: old),
-            CleanItem(name: "Claude sanal makinesi (vm_bundles)", detail: "Önce Claude'u kapat · gerekince yeniden iner", paths: [cl + "/vm_bundles"]),
-            CleanItem(name: "Claude uygulama cache'i", paths: [cl + "/Cache", cl + "/Code Cache", cl + "/GPUCache"]),
+            CleanItem(name: L("Ekran görüntüleri ve videolar", "Screenshots and videos"),
+                      detail: "\(media.count) " + L("dosya", "files") + " · ~/.claude/projects", paths: media),
+            CleanItem(name: L("30 günden eski konuşmalar", "Conversations older than 30 days"),
+                      detail: "\(old.count) " + L("öğe · bu konuşmalara geri dönülemez", "items · these can no longer be resumed"), paths: old),
+            CleanItem(name: L("Claude sanal makinesi (vm_bundles)", "Claude virtual machine (vm_bundles)"),
+                      detail: L("Önce Claude'u kapat · gerekince yeniden iner", "Quit Claude first · re-downloaded when needed"), paths: [cl + "/vm_bundles"]),
+            CleanItem(name: L("Claude uygulama cache'i", "Claude app cache"), paths: [cl + "/Cache", cl + "/Code Cache", cl + "/GPUCache"]),
         ]
 
         var unity: [CleanItem] = []
         let candidates = Set(children(ip) + children(H) + children(ip).flatMap { children($0) })
         for d in candidates where exists(d + "/Assets") && exists(d + "/ProjectSettings") && exists(d + "/Library") {
-            unity.append(CleanItem(name: rel(d), detail: "Unity Library · açılışta yeniden oluşur (ilk açılış uzun sürer)", paths: [d + "/Library"]))
+            unity.append(CleanItem(name: rel(d),
+                                   detail: L("Unity Library · açılışta yeniden oluşur (ilk açılış uzun sürer)", "Unity Library · rebuilt on open (first open is slow)"),
+                                   paths: [d + "/Library"]))
         }
 
         let keep = [".pem", ".jks", ".p12", ".keystore", ".mobileprovision"]
@@ -193,15 +207,20 @@ enum Scanner {
             .map { CleanItem(name: base($0), detail: "Downloads", paths: [$0]) }
 
         return [
-            CleanSection(title: "Cache'ler", note: "Gerekince yeniden oluşur", safe: true,
+            CleanSection(title: L("Cache'ler", "Caches"), note: L("Gerekince yeniden oluşur", "Rebuilt when needed"), safe: true,
                          items: caches.map { CleanItem(name: $0.0, paths: $0.1) }),
-            CleanSection(title: "Build çıktıları", note: "Yeniden derleyince geri gelir", safe: true, minSize: 50 << 20, items: builds),
-            CleanSection(title: "iOS simülatörleri", note: "Tamamen silinen cihaz ve içindeki uygulamalar gider", safe: false, minSize: 100 << 20, items: sims),
-            CleanSection(title: "Android emülatörleri", note: "Android Studio'dan yeniden oluşturulur", safe: false, items: avds),
-            CleanSection(title: "Xcode", note: "Yayındaki sürümün arşivini sakla", safe: false, items: xcode),
-            CleanSection(title: "Claude", note: "Ekran görüntüleri, eski konuşmalar, VM", safe: false, items: claude),
-            CleanSection(title: "Unity projeleri", note: "Library klasörleri", safe: false, minSize: 200 << 20, items: unity),
-            CleanSection(title: "Downloads", note: "200 MB üstü", safe: false, minSize: 200 << 20, items: downloads),
+            CleanSection(title: L("Build çıktıları", "Build outputs"), note: L("Yeniden derleyince geri gelir", "Come back on the next build"),
+                         safe: true, minSize: 50 << 20, items: builds),
+            CleanSection(title: L("iOS simülatörleri", "iOS simulators"),
+                         note: L("Tamamen silinen cihaz ve içindeki uygulamalar gider", "Deleting a device removes its apps too"),
+                         safe: false, minSize: 100 << 20, items: sims),
+            CleanSection(title: L("Android emülatörleri", "Android emulators"), note: L("Android Studio'dan yeniden oluşturulur", "Recreate them in Android Studio"),
+                         safe: false, items: avds),
+            CleanSection(title: "Xcode", note: L("Yayındaki sürümün arşivini sakla", "Keep the archive of your released build"), safe: false, items: xcode),
+            CleanSection(title: "Claude", note: L("Ekran görüntüleri, eski konuşmalar, VM", "Screenshots, old conversations, VM"), safe: false, items: claude),
+            CleanSection(title: L("Unity projeleri", "Unity projects"), note: L("Library klasörleri", "Library folders"),
+                         safe: false, minSize: 200 << 20, items: unity),
+            CleanSection(title: "Downloads", note: L("200 MB üstü", "Over 200 MB"), safe: false, minSize: 200 << 20, items: downloads),
         ]
     }
 }
@@ -216,7 +235,7 @@ enum Cleaner {
             guard path.hasPrefix(H + "/") else { continue }
             do { try fm.removeItem(atPath: path) } catch { failed += 1 }
         }
-        return failed == 0 ? nil : "\(item.name) (\(failed) silinemedi)"
+        return failed == 0 ? nil : "\(item.name) (\(failed) " + L("silinemedi", "could not be deleted") + ")"
     }
 }
 
@@ -261,13 +280,14 @@ final class Store: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async {
             var errors: [String] = []
             for (i, item) in items.enumerated() {
-                DispatchQueue.main.async { self.status = "Siliniyor (\(i + 1)/\(items.count)): \(item.name)" }
+                DispatchQueue.main.async { self.status = L("Siliniyor", "Deleting") + " (\(i + 1)/\(items.count)): \(item.name)" }
                 if let e = Cleaner.clean(item) { errors.append(e) }
             }
             DispatchQueue.main.async {
                 for s in self.sections.indices { self.sections[s].items.removeAll { ids.contains($0.id) } }
                 self.sections.removeAll { $0.items.isEmpty }
-                self.message = "\(fmt(size)) silindi." + (errors.isEmpty ? "" : " Hata: " + errors.prefix(3).joined(separator: ", "))
+                self.message = fmt(size) + L(" silindi.", " deleted.")
+                    + (errors.isEmpty ? "" : L(" Hata: ", " Errors: ") + errors.prefix(3).joined(separator: ", "))
                 self.busy = false
                 self.status = ""
                 self.refreshDisk()
@@ -284,6 +304,7 @@ struct ContentView: View {
     @StateObject var store = Store()
     @State var pending: [CleanItem] = []
     @State var confirm = false
+    @State var language = lang
 
     var usedRatio: Double { store.total == 0 ? 0 : Double(store.total - store.free) / Double(store.total) }
 
@@ -292,7 +313,7 @@ struct ContentView: View {
             header
             Divider()
             if store.sections.isEmpty {
-                Text(store.busy ? "Taranıyor…" : "Silinecek bir şey bulunamadı")
+                Text(store.busy ? L("Taranıyor…", "Scanning…") : L("Silinecek bir şey bulunamadı", "Nothing to clean"))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -309,11 +330,12 @@ struct ContentView: View {
             Divider()
             footer
         }
-        .alert("Kalıcı olarak silinsin mi?", isPresented: $confirm) {
-            Button("Sil", role: .destructive) { store.clean(pending) }
-            Button("Vazgeç", role: .cancel) {}
+        .alert(L("Kalıcı olarak silinsin mi?", "Delete permanently?"), isPresented: $confirm) {
+            Button(L("Sil", "Delete"), role: .destructive) { store.clean(pending) }
+            Button(L("Vazgeç", "Cancel"), role: .cancel) {}
         } message: {
-            Text("\(pending.count) öğe, toplam \(fmt(pending.reduce(0) { $0 + $1.size })). Bu işlem geri alınamaz.")
+            Text("\(pending.count) " + L("öğe, toplam ", "items, ") + fmt(pending.reduce(0) { $0 + $1.size })
+                 + L(". Bu işlem geri alınamaz.", " in total. This cannot be undone."))
         }
         .onAppear { store.scan() }
     }
@@ -324,7 +346,7 @@ struct ContentView: View {
                 ProgressView(value: usedRatio)
                     .tint(usedRatio > 0.9 ? .red : .accentColor)
                     .frame(width: 280)
-                Text("\(fmt(store.free)) boş · \(fmt(store.total)) toplam")
+                Text(fmt(store.free) + L(" boş · ", " free · ") + fmt(store.total) + L(" toplam", " total"))
                     .font(.callout).monospacedDigit()
             }
             Spacer()
@@ -332,7 +354,18 @@ struct ContentView: View {
                 ProgressView().controlSize(.small)
                 Text(store.status).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
-            Button { store.scan() } label: { Label("Yeniden tara", systemImage: "arrow.clockwise") }
+            Picker("", selection: $language) {
+                Text("TR").tag("tr")
+                Text("EN").tag("en")
+            }
+            .pickerStyle(.segmented).labelsHidden().frame(width: 90)
+            .disabled(store.busy)
+            .onChange(of: language) { _, new in
+                lang = new
+                UserDefaults.standard.set(new, forKey: "lang")
+                store.scan()
+            }
+            Button { store.scan() } label: { Label(L("Yeniden tara", "Rescan"), systemImage: "arrow.clockwise") }
                 .disabled(store.busy)
         }
         .padding()
@@ -343,14 +376,14 @@ struct ContentView: View {
         let all = sec.items.allSatisfy { $0.selected }
         return HStack {
             Text(sec.title).font(.headline)
-            Text(sec.safe ? "Güvenli" : "Kontrol et")
+            Text(sec.safe ? L("Güvenli", "Safe") : L("Kontrol et", "Review"))
                 .font(.caption2.bold())
                 .padding(.horizontal, 6).padding(.vertical, 2)
                 .background((sec.safe ? Color.green : Color.orange).opacity(0.25), in: Capsule())
             Text(sec.note).font(.caption).foregroundStyle(.secondary)
             Spacer()
             Text(fmt(sec.total)).monospacedDigit()
-            Button(all ? "Seçimi kaldır" : "Tümünü seç") {
+            Button(all ? L("Seçimi kaldır", "Deselect all") : L("Tümünü seç", "Select all")) {
                 for i in s.wrappedValue.items.indices { s.wrappedValue.items[i].selected = !all }
             }
             .buttonStyle(.link).font(.caption)
@@ -370,7 +403,7 @@ struct ContentView: View {
             Spacer()
             Text(fmt(it.size)).monospacedDigit()
                 .foregroundStyle(it.size > 10 << 30 ? Color.red : Color.primary)
-            Button("Temizle") { ask([it]) }.disabled(store.busy)
+            Button(L("Temizle", "Clean")) { ask([it]) }.disabled(store.busy)
         }
     }
 
@@ -379,8 +412,9 @@ struct ContentView: View {
         return HStack {
             if !store.message.isEmpty { Text(store.message).font(.callout).lineLimit(2) }
             Spacer()
-            Text("Seçili: \(sel.count) öğe · \(fmt(sel.reduce(0) { $0 + $1.size }))").monospacedDigit()
-            Button("Seçilenleri temizle") { ask(sel) }
+            Text(L("Seçili: ", "Selected: ") + "\(sel.count) " + L("öğe", "items") + " · " + fmt(sel.reduce(0) { $0 + $1.size }))
+                .monospacedDigit()
+            Button(L("Seçilenleri temizle", "Clean selected")) { ask(sel) }
                 .buttonStyle(.borderedProminent).tint(.red)
                 .disabled(sel.isEmpty || store.busy)
         }
@@ -395,18 +429,21 @@ struct ContentView: View {
 
 struct DiskTemizleApp: App {
     var body: some Scene {
-        WindowGroup("Disk Temizle") {
-            ContentView().frame(minWidth: 780, minHeight: 560)
+        WindowGroup(L("Disk Temizle", "Disk Cleaner")) {
+            ContentView().frame(minWidth: 820, minHeight: 560)
         }
     }
 }
 
 // MARK: - Entry
 
+if let i = CommandLine.arguments.firstIndex(of: "--lang"), i + 1 < CommandLine.arguments.count {
+    lang = CommandLine.arguments[i + 1]
+}
 if CommandLine.arguments.contains("--dump") {
     for s in Scanner.scan(progress: { _ in }) {
-        print("## \(s.title) — \(fmt(s.total))")
-        for i in s.items.prefix(6) { print("  \(fmt(i.size))\t\(i.name)\t\(i.detail)") }
+        print("## \(s.title) — \(fmt(s.total)) · \(s.note)")
+        for i in s.items.prefix(3) { print("  \(fmt(i.size))\t\(i.name)\t\(i.detail)") }
     }
     exit(0)
 }
